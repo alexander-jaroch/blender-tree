@@ -48,7 +48,7 @@ for n in range(height_segments + 1):
             if n > branch_height:
                 side_faces.append(face)
             bm.faces.new(face)
-        if n == height_segments - 1:
+        if n == height_segments:
             bm.faces.new(ring)
     last_ring = ring
     radius_bottom = radius_bottom * radius_reduction
