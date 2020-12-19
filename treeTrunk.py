@@ -1,6 +1,7 @@
 import bpy
 import math
 import bmesh
+from random import randint
 
 col = bpy.data.collections.get("Collection")    # get collection from scene hirarchy
 
@@ -18,12 +19,13 @@ bm = bmesh.new()
 
 # cylinder variables
 radius_bottom = 0.25
-radius_top = 0.06
-radius_reduction = 0.9
+radius_top = 0.05
+radius_reduction = 0.995
 height = 5
-height_segments = 4
+height_segments = height * 32
 segments = 16
-branch_height = 2
+branch_height = 5
+branch_count = 20
 
 # calculate angle delta
 delta = (2 * math.pi) / segments
@@ -54,6 +56,38 @@ for n in range(height_segments + 1):
     radius_bottom = radius_bottom * radius_reduction
     
 # create branches
+used_faces = [False] * len(side_faces)
+
+operations_border = [0, -1, segments, segments - 1] 
+operations_normal = [0,  1, segments, segments + 1]
+
+c = 0
+
+for i in range(branch_count):
+    extrude_faces = []
+    l = len(side_faces)
+    r = randint(branch_height * segments, l - segments - 2)
+    used = False
+    
+    for k in range(4):
+        if r % segments == 0:
+            used = used or used_faces[r + operations_border[k]]
+        else:
+            used = used or used_faces[r + operations_normal[k]]
+        
+    if not used:
+        for k in range(4):
+            if r % segments == 0:
+                face = side_faces[r + operations_border[k]]
+                used_faces[r + operations_border[k]] = True
+            else:
+                face = side_faces[r + operations_normal[k]]        
+                used_faces[r + operations_border[k]] = True    
+            extrude_faces.append(face)
+        c = c + 1
+        
+print("extruded " + str(c) + " faces")
+
 
 # BMesh to Mesh
 bm.to_mesh(mesh)
