@@ -24,7 +24,7 @@ radius_reduction = 0.995
 height = 5
 height_segments = height * 32
 segments = 16
-branch_height = 5
+branch_height = 20
 branch_count = 20
 
 # calculate angle delta
@@ -58,8 +58,8 @@ for n in range(height_segments + 1):
 # create branches
 used_faces = [False] * len(side_faces)
 
-operations_border = [0, -1, segments, segments - 1] 
-operations_normal = [0,  1, segments, segments + 1]
+operations_border = [0, -segments + 1, segments, 1]
+operations_normal = [0, 1, segments, segments + 1]
 
 c = 0
 
@@ -77,13 +77,14 @@ for i in range(branch_count):
         
     if not used:
         for k in range(4):
-            if r % segments == 0:
+            if r % segments == segments - 1:
                 face = side_faces[r + operations_border[k]]
                 used_faces[r + operations_border[k]] = True
             else:
                 face = side_faces[r + operations_normal[k]]        
                 used_faces[r + operations_border[k]] = True    
             extrude_faces.append(face)
+            bm.faces.get(face).select_set(True)
         c = c + 1
         
 print("extruded " + str(c) + " faces")
