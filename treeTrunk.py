@@ -107,7 +107,6 @@ for i in range(branch_count):
                 
             bmface = bm.faces.get(face)            
             extrude_faces.append(bmface)
-            bmface.select_set(True)
             
         branch_extrude = 5
         for x in range(branch_extrude):
@@ -121,15 +120,21 @@ for i in range(branch_count):
             
             direction = avg_normal(get_normals(extrude_faces)) * -1 * length + Vector(random_t)
             
-            bmesh.ops.translate(bm, vec=direction, verts=translate_verts)  
-            
-            #m = Matrix.Translation((0, 0, 0)) * Matrix.Scale(0.7, 4) * Matrix.Translation(direction)
-            #bmesh.ops.translate(bm, verts=translate_verts, space=m)  
-            #bmesh.ops.scale(bm, verts=translate_verts, space=m)            
+            bmesh.ops.translate(bm, vec=direction, verts=translate_verts)      
             
             bmesh.ops.delete(bm, geom=extrude_faces, context="FACES")
             
             extrude_faces = [f for f in extruded['geom'] if isinstance(f, bmesh.types.BMFace)] 
+            
+            for face in extrude_faces:
+                face.select_set(True)                
+                
+            # Irgendwas machen
+                
+            edges = [e for e in extruded['geom'] if isinstance(e, bmesh.types.BMEdge)]
+            
+            for edge in edges:
+                edge.select_set(False) 
         
         c = c + 1
         
