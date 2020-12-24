@@ -1,16 +1,18 @@
 import bpy
 import math
 import bmesh
-from random import randint, random
+from random import randint, random, uniform
 from mathutils import Vector, Matrix
 
-col = bpy.data.collections.get("Collection")    # get collection from scene hirarchy
+col = bpy.data.collections[0]
+    
+for child in bpy.data.objects:
+    bpy.data.objects.remove(child)
+    
+for child in bpy.data.meshes:
+    bpy.data.meshes.remove(child)
 
-# hide children of collection
-for child in col.objects:
-    child.hide_set(1)
-
-mesh = bpy.data.meshes.new("Cylinder")          # create empty mesh
+mesh = bpy.data.meshes.new("Tree")              # create empty mesh
 obj = bpy.data.objects.new(mesh.name, mesh)     # create empty object with mesh
 col.objects.link(obj)                           # add object to collection
 bpy.context.view_layer.objects.active = obj     # select object
@@ -19,14 +21,19 @@ bpy.context.view_layer.objects.active = obj     # select object
 bm = bmesh.new()
 
 # cylinder variables
-radius_bottom = 0.25
-radius_top = 0.05
-radius_reduction = 0.995
-height = 3
-height_segments = height * 32
+radius_bottom = 0.15
+radius_top = 0.02
+radius_reduction = 0.99
+height = 4
 segments = 16
+branch_top = 5
 branch_height = 10
-branch_count = 50
+branch_count = 100
+
+# height segments
+circumference = 2 * math.pi * (radius_top + radius_bottom) / 2
+width = circumference / segments
+height_segments = math.ceil(height / width)
 
 total_segments = segments * height_segments
 
@@ -51,6 +58,26 @@ def get_normals(faces):
         normals.append(face.normal)
     return normals
 
+# calculates center of given BMFaces and returns its center and a set of used verts 
+def calc_center_of_faces(faces):    
+    center = Vector((0,0,0))
+    verts = set()
+    vert_count = 0
+    for face in faces:
+        for vert in face.verts:           
+            center = center + vert.co
+            vert_count = vert_count + 1
+            verts.add(vert)
+    center = center / vert_count
+    return (center, verts)
+
+def local_axes(x_local):    
+    z_rot = Matrix([(0, -1, 0), (1, 0, 0), (0, 0, 1)])    
+    y_proj = Vector((x_local.x, x_local.y, 0))
+    y_local = y_proj @ z_rot    
+    z_local = x_local.cross(y_local)    
+    return (x_local.normalized(), y_local.normalized(), z_local.normalized())
+    
 # calculate angle delta
 delta = (2 * math.pi) / segments
 height_delta = height / height_segments
@@ -82,11 +109,11 @@ for n in range(height_segments + 1):
 # create branches
 used_faces = [False] * len(side_faces)
 
-c = 0
+actual_branch_count = 0
 
 for i in range(branch_count):
     l = len(side_faces)
-    r = randint(branch_height * segments, l - segments - 2)
+    r = randint(branch_height * segments, l - (branch_top + 1) * segments - 1)
     used = False
              
     extrude_faces = []
@@ -116,9 +143,7 @@ for i in range(branch_count):
 
             length = (1 - r / total_segments) * 2 / branch_extrude
             
-            random_t = (random() * 0.05 - 0.025, random() * 0.05 - 0.025, random() * 0.1)
-            
-            direction = avg_normal(get_normals(extrude_faces)) * -1 * length + Vector(random_t)
+            direction = avg_normal(get_normals(extrude_faces)) * -1 * length
             
             bmesh.ops.translate(bm, vec=direction, verts=translate_verts)
              
@@ -126,35 +151,21 @@ for i in range(branch_count):
             
             extrude_faces = [f for f in extruded['geom'] if isinstance(f, bmesh.types.BMFace)]
             
-            center = Vector((0,0,0))
-            vertcount = 0
-            face_verts = set()
-            for face in extrude_faces:
-                for vert in face.verts:           
-                    center = center + vert.co
-                    vertcount = vertcount + 1
-                    face_verts.add(vert)
-            center = center / vertcount       
+            center, face_verts = calc_center_of_faces(extrude_faces)            
+            translate = Matrix.Translation(-center)            
+            x_loc, y_loc, z_loc = local_axes(direction)
             
-            for face in extrude_faces:
-                #face.select_set(True)
-                #calculation = face.calc_center_median()
-                #calculation = center
-                #vertices = face.verts
-                translation_matrix = Matrix.Translation(-center)
-                scale = Matrix.Scale(0.91,4)
-                bmesh.ops.transform(bm, matrix=scale, verts=list(face_verts), space=translation_matrix)
-
+            for face in extrude_faces:                                      
+                scale = Matrix.Scale(uniform(0.9, 0.95), 4)                
+                rot_x = Matrix.Rotation(uniform(-0.1, 0.1), 4, x_loc)
+                rot_y = Matrix.Rotation(uniform(-0.05, 0.15), 4, y_loc)
+                rot_z = Matrix.Rotation(uniform(-0.1, 0.1), 4, z_loc)
                 
-            #edges = [e for e in extruded['geom'] if isinstance(e, bmesh.types.BMEdge)]
-            
-            #for edge in edges:
-            #    edge.select_set(False)
-            
-        c = c + 1
+                transform = rot_z @ rot_y @ rot_x @ scale                         
+                bmesh.ops.transform(bm, matrix=transform, verts=list(face_verts), space=translate)
+        actual_branch_count = actual_branch_count + 1
         
-print("extruded " + str(c) + " faces")
-
+print("added " + str(actual_branch_count) + " branches")
 
 # BMesh to Mesh
 bm.to_mesh(mesh)
