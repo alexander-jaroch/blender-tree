@@ -20,10 +20,13 @@ class GeneratePineTree(bpy.types.Operator):
     bl_label = "Generate Pine Tree"
     bl_options = {'REGISTER', 'UNDO'}
 
-    generate_branches = bpy.props.BoolProperty(
-        name = "Generate Branches",
-        description = "Start generating branches",
-        default = False
+    radius_top = bpy.props.FloatProperty(
+        name = "Radius Top",
+        description = "Radius at top of tree trunk",
+        default = 0.02,
+        min = 0, 
+        soft_max = 1,
+        step = 1
     )
 
     radius_bottom = bpy.props.FloatProperty(
@@ -32,22 +35,17 @@ class GeneratePineTree(bpy.types.Operator):
         default = 0.15,
         min = 0.1, 
         soft_max = 1,
-    )
-
-    radius_top = bpy.props.FloatProperty(
-        name = "Radius Top",
-        description = "Radius at top of tree trunk",
-        default = 0.02,
-        min = 0, 
-        soft_max = 1,
+        step = 1
     )
 
     radius_reduction = bpy.props.FloatProperty(
-        name = "Radius Reduction",
+        name = "Reduction (%)",
         description = "Factor at which radius is reduced per ring",
-        default = 0.99,
-        min = 0.5,
-        soft_max = 1
+        default = 1,
+        min = 0,
+        max = 100,
+        soft_max = 10,
+        step = 5
     )
 
     height = bpy.props.FloatProperty(
@@ -55,7 +53,8 @@ class GeneratePineTree(bpy.types.Operator):
         description = "Height of tree",
         default = 3,
         min = 0.5,
-        soft_max = 10
+        soft_max = 10,
+        step = 10
     )
 
     segments = bpy.props.IntProperty (
@@ -66,20 +65,22 @@ class GeneratePineTree(bpy.types.Operator):
         soft_max = 16
     )
 
-    branch_height = bpy.props.IntProperty (
-        name = "Branch Height",
+    branch_height_lower = bpy.props.FloatProperty (
+        name = "Branch Start (%)",
         description = "Height at which branches begin",
         default = 10,
-        min = 1,
-        max = 20
+        min = 0,
+        max = 100,
+        step = 50
     )
 
-    branch_top = bpy.props.IntProperty (
-        name = "Upper Branch Limit",
-        description = "Limit of branches at the top of the trunk",
-        default = 5,
-        min = 1,
-        soft_max = 20
+    branch_height_upper = bpy.props.FloatProperty (
+        name = "Branch End (%)",
+        description = "Height at which branches end",
+        default = 90,
+        min = 0,
+        max = 100,
+        step = 50
     )
 
     branch_count = bpy.props.IntProperty (
@@ -96,6 +97,12 @@ class GeneratePineTree(bpy.types.Operator):
         default = 0,
         min = 0,
         max = 400
+    )
+
+    generate_branches = bpy.props.BoolProperty(
+        name = "Generate Branches",
+        description = "Start generating branches",
+        default = False
     )
 
     def get_index(self, n, i):
@@ -168,9 +175,10 @@ class GeneratePineTree(bpy.types.Operator):
     bmesh_tree = None
     bmesh_leaves = None
 
-    new_radius = 0
+    delta = 0
+    height_delta = 0
+    height_segments = 0
 
-    # clear scene
     def clear(self):
         for child in bpy.data.objects:
             bpy.data.objects.remove(child)
@@ -178,7 +186,6 @@ class GeneratePineTree(bpy.types.Operator):
         for child in bpy.data.meshes:
             bpy.data.meshes.remove(child)
 
-    # create and link empty meshes
     def create_meshes(self):
         collection = bpy.context.collection
     
@@ -197,7 +204,6 @@ class GeneratePineTree(bpy.types.Operator):
         self.bmesh_tree = bmesh.new()
         self.bmesh_leaves = bmesh.new()
 
-    # return meshes
     def free_meshes(self):
         self.bmesh_tree.to_mesh(self.mesh_tree)
         self.bmesh_tree.free()
@@ -207,50 +213,66 @@ class GeneratePineTree(bpy.types.Operator):
 
         #bpy.ops.object.editmode_toggle()
 
-    def calculate_values():
-        print("calc")
+    def calculate_values(self):
+        self.delta =  (2 * math.pi) / self.segments
+        radius = (self.radius_top + self.radius_bottom) / 2
+        width = self.delta * radius
 
-    # generate pine tree
-    def generate(self):    
-        #self.clear()
-        self.create_meshes()
+        self.height_segments = math.ceil(self.height / width)
+        self.height_delta = self.height / self.height_segments
 
-        # height segments
-        circumference = 2 * math.pi * (self.radius_top + self.radius_bottom) / 2
-        segment_width = circumference / self.segments
-        height_segments = math.ceil(self.height / segment_width)
+    def branch_height(self, height):
+        if self.branch_height_lower > self.branch_height_upper:
+            lower = self.branch_height_lower
+            self.branch_height_lower = self.branch_height_upper
+            self.branch_height_upper = lower
 
-        # total segments
-        total_segments = self.segments * height_segments
-        # calculate angle delta
-        delta = (2 * math.pi) / self.segments
-        height_delta = self.height / height_segments
+        return height > self.branch_height_lower / 100 * self.height_segments and height < self.branch_height_upper / 100 * self.height_segments
 
-        # create trunk
-        last_ring = []
-        side_faces = []
+    def reduce(self, value, ratio):
+        return value - value * ratio
+
+    def generate_trunk(self):
         new_radius = self.radius_bottom
+        last_ring = []
+        branch_faces = []
 
-        for n in range(height_segments + 1):
-            radius = (1 - n / height_segments) * new_radius + (n / height_segments) * self.radius_top
+        for n in range(self.height_segments + 1):
+            radius = (1 - n / self.height_segments) * new_radius + (n / self.height_segments) * self.radius_top         # CHECK
             ring = []
             for i in range(self.segments):
-                x = radius * math.cos(i * delta)
-                y = radius * math.sin(i * delta)
-                v = self.bmesh_tree.verts.new((x, y, n * height_delta))
+                x = radius * math.cos(i * self.delta)
+                y = radius * math.sin(i * self.delta)
+                v = self.bmesh_tree.verts.new((x, y, n * self.height_delta))
                 ring.append(v)
+
             if n == 0:
                 self.bmesh_tree.faces.new(ring)
             else:
                 for i in range(self.segments):
                     face = [last_ring[i], last_ring[(i + 1) % self.segments], ring[(i + 1) % self.segments], ring[i]]
-                    if n > self.branch_height:
-                        side_faces.append(face)
+                    if self.branch_height(n):
+                        branch_faces.append(face)
                     self.bmesh_tree.faces.new(face)
-                if n == height_segments:
+                if n == self.height_segments:
                     self.bmesh_tree.faces.new(ring)
+
+            new_radius = self.reduce(new_radius, self.radius_reduction / 100)
             last_ring = ring
-            new_radius = new_radius * self.radius_reduction
+
+        return branch_faces
+
+    def smooth_tree(self):        
+        for face in self.bmesh_tree.faces:
+            face.smooth = True
+
+    def generate(self):    
+        #self.clear()
+        self.create_meshes()
+        self.calculate_values()
+
+        # create trunk
+        side_faces = self.generate_trunk()
         
         if self.generate_branches:
             # create branches
@@ -259,8 +281,7 @@ class GeneratePineTree(bpy.types.Operator):
             branch_start = len(self.bmesh_tree.faces)
 
             for i in range(self.branch_count):
-                l = len(side_faces)
-                r = randint(self.branch_height * self.segments, l - (self.branch_top + 1) * self.segments - 1)
+                r = randint(0, len(side_faces) - self.segments - 1)
                 used = False
                     
                 extrude_faces = []
@@ -272,7 +293,7 @@ class GeneratePineTree(bpy.types.Operator):
                         used = True
                         break
                 
-                if not used:   
+                if not used:
                     for k in range(4):
                         index = self.get_index(r, k)
                     
@@ -287,7 +308,8 @@ class GeneratePineTree(bpy.types.Operator):
                                 
                         extruded = bmesh.ops.extrude_face_region(self.bmesh_tree, geom=extrude_faces)            
                         translate_verts = [v for v in extruded['geom'] if isinstance(v, bmesh.types.BMVert)]
-
+                        
+                        total_segments = self.segments * self.height_segments
                         length = (1 - r / total_segments) * 2 / branch_extrude
                     
                         direction = self.avg_normal(self.get_normals(extrude_faces)) * -1 * length
@@ -358,11 +380,8 @@ class GeneratePineTree(bpy.types.Operator):
                         self.add_plane(face, -1)
 
             self.generate_branches = False
-                    
-        #Smooth Mesh
-        for face in self.bmesh_tree.faces:
-            face.smooth = True
 
+        self.smooth_tree()
         self.free_meshes()
 
     def execute(self, context):
