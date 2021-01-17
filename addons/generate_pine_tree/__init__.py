@@ -10,12 +10,13 @@ bl_info = {
 }
 
 import bpy
+import bpy_extras
 import math
 import bmesh
 from random import randint, random, uniform
 from mathutils import Vector, Matrix
 
-class GeneratePineTree(bpy.types.Operator):
+class GeneratePineTree(bpy.types.Operator, bpy_extras.object_utils.AddObjectHelper):
     bl_idname = "mesh.generate_pine_tree"
     bl_label = "Generate Pine Tree"
     bl_options = {'REGISTER', 'UNDO'}
@@ -87,9 +88,18 @@ class GeneratePineTree(bpy.types.Operator):
     branch_count = bpy.props.IntProperty (
         name = "Branch Count",
         description = "Number of branches",
-        default = 40,
+        default = 20,
         min = 0,
-        max = 60
+        max = 40
+    )
+
+    branch_length = bpy.props.FloatProperty (
+        name = "Branch Length",
+        description = "Maximum branch length",
+        default = 1.5,
+        min = 0.25,
+        soft_max = 5,
+        step = 10
     )
 
     twig_count = bpy.props.IntProperty (
@@ -105,31 +115,6 @@ class GeneratePineTree(bpy.types.Operator):
         description = "Start generating branches",
         default = False
     )
-
-    def add_plane(self, branch_face, factor, scale):
-        width, height = scale
-        center = branch_face.calc_center_median()
-        translate = Matrix.Translation(-center)
-        x_loc, y_loc, z_loc = self.local_axes(branch_face.normal)
-
-        c1 = center
-        c2 = center + y_loc * width
-        c3 = center + x_loc * height + y_loc * width
-        c4 = center + x_loc * height
-        corners = [c1, c2, c3, c4]
-
-        vertices = []
-        for corner in corners:
-            vertices.append(self.bmesh_leaves.verts.new(corner))
-        self.bmesh_leaves.faces.new(vertices)                    
-                                    
-        rot_x = Matrix.Rotation(uniform(-math.pi, math.pi), 4, x_loc)
-        rot_y = Matrix.Rotation(factor * uniform(math.pi/7, math.pi/6), 4, y_loc)
-        rot_z = Matrix.Rotation(factor * uniform(math.pi/5, math.pi/4), 4, z_loc)
-        
-        transform = rot_z @ rot_y @ rot_x
-        
-        bmesh.ops.transform(self.bmesh_leaves, matrix=transform, verts=vertices, space=translate)
 
     # mesh attributes
     mesh_tree = None
@@ -153,8 +138,8 @@ class GeneratePineTree(bpy.types.Operator):
         for child in bpy.data.meshes:
             bpy.data.meshes.remove(child)
 
-    def create_meshes(self):
-        collection = bpy.context.collection
+    def create_meshes(self, context):
+        collection = context.collection
     
         self.mesh_tree = bpy.data.meshes.new("Tree")
         self.mesh_leaves = bpy.data.meshes.new("Leaves")
@@ -166,7 +151,7 @@ class GeneratePineTree(bpy.types.Operator):
         collection.objects.link(tree)
         collection.objects.link(leaves)
 
-        bpy.context.view_layer.objects.active = tree
+        context.view_layer.objects.active = tree
 
         self.bmesh_tree = bmesh.new()
         self.bmesh_leaves = bmesh.new()
@@ -310,81 +295,92 @@ class GeneratePineTree(bpy.types.Operator):
             if self.check_branch_extrudable(adjacent_indices):                          
                 faces = self.get_branch_faces(adjacent_indices)
                     
-                branch_segments = 8      # CHECK branch_segments and length as user input?
+                branch_segments = 8                                                                                 # CHECK branch_segments as user input?
 
                 for k in range(branch_segments):
-                    total_segments = self.segments * self.height_segments                           # CHECK see above
-                    segment_length = (1 - random_index / total_segments) * 2 / branch_segments      # CHECK see above
+                    total_segments = self.segments * self.height_segments
+                    segment_length = (1 - random_index / total_segments) * self.branch_length / branch_segments
 
-                    direction = self.calc_average_face_normal(faces) * segment_length
-                    
+                    direction = self.calc_average_face_normal(faces) * segment_length                               # CHECK first face has zero normal, WHY?                  
                     faces = self.extrude_faces(faces, direction)                    
                     self.rotate_faces(faces, direction, uniform(0.65, 0.8), uniform(-0.2, 0.2), uniform(-0.1, 0.3), uniform(-0.2, 0.2))
                     
         self.bmesh_tree.faces.ensure_lookup_table()
         self.branch_end = len(self.bmesh_tree.faces)
 
+    def add_leaf(self, face, factor, width, height):
+            center = face.calc_center_median()
+            translate = Matrix.Translation(-center)
+            x_loc, y_loc, z_loc = self.local_axes(face.normal)
+
+            c1 = center
+            c2 = center + y_loc * width
+            c3 = center + x_loc * height + y_loc * width
+            c4 = center + x_loc * height
+            corners = [c1, c2, c3, c4]
+
+            vertices = []
+            for corner in corners:
+                vertices.append(self.bmesh_leaves.verts.new(corner))
+            self.bmesh_leaves.faces.new(vertices)                    
+                                    
+            rot_x = Matrix.Rotation(uniform(-math.pi, math.pi), 4, x_loc)
+            rot_y = Matrix.Rotation(factor * uniform(math.pi/7, math.pi/6), 4, y_loc)
+            rot_z = Matrix.Rotation(factor * uniform(math.pi/5, math.pi/4), 4, z_loc)
+        
+            transform = rot_z @ rot_y @ rot_x        
+            bmesh.ops.transform(self.bmesh_leaves, matrix=transform, verts=vertices, space=translate)
+
+    def add_leaves(self, face, width, height):
+        self.add_leaf(face, 1, width, height)
+        self.add_leaf(face, -1, width, height)
+
     def generate_twigs(self):            
         for i in range(self.twig_count):
+            random_index = randint(self.branch_start, self.branch_end - 1)
+
             self.bmesh_tree.faces.ensure_lookup_table()
-            extrude_faces = [self.bmesh_tree.faces[randint(self.branch_start, self.branch_end - 1)]]
+            faces = [self.bmesh_tree.faces[random_index]]
             
-            branch_extrude = 16
-            for x in range(branch_extrude):
-                extruded = bmesh.ops.extrude_face_region(self.bmesh_tree, geom=extrude_faces)            
-                translate_verts = [v for v in extruded['geom'] if isinstance(v, bmesh.types.BMVert)]
+            twig_segments = 16                                                                                      # CHECK twig_segments and length as user input?
 
-                length = 0.001
-                
-                if x > 0:
-                    length = 0.0125
-                
-                direction = self.calc_average_face_normal(extrude_faces) * -1 * length
-                
-                bmesh.ops.translate(self.bmesh_tree, vec=direction, verts=translate_verts)
-                
-                bmesh.ops.delete(self.bmesh_tree, geom=extrude_faces, context="FACES")
-                
-                extrude_faces = [f for f in extruded['geom'] if isinstance(f, bmesh.types.BMFace)]
-                
-                center, face_verts = self.calc_center_of_faces(extrude_faces)            
-                translate = Matrix.Translation(-center)            
-                x_loc, y_loc, z_loc = self.local_axes(direction)
-                
-                for face in extrude_faces:    
-                    scale = self.random_scale((0.1, 0.05))
-                    if x > 0: 
-                        scale = self.random_scale((0.9, 0.95))
-                        
-                    rot_x = self.random_rotation((-0.05, 0.05), x_loc)
-                    rot_y = self.random_rotation((-0.025, 0.075), y_loc)
-                    rot_z = self.random_rotation((-0.05, 0.05), z_loc)
-                    
-                    transform = rot_z @ rot_y @ rot_x @ scale       
-                    bmesh.ops.transform(self.bmesh_tree, matrix=transform, verts=face_verts, space=translate)
-            
-                    #leaf_scale = (0.01, 0.08)
-                    leaf_scale = (uniform(0.005, 0.01), uniform(0.04, 0.08))
+            for k in range(twig_segments):            
+                segment_length = 0.0125     
+                scale = uniform(0.9, 0.95)           
+                if k == 0:
+                    segment_length = 0.001
+                    scale = uniform(0.1, 0.05)
 
-                    self.add_plane(face, 1, leaf_scale)
-                    self.add_plane(face, -1, leaf_scale)
+                direction = self.calc_average_face_normal(faces) * segment_length
+                faces = self.extrude_faces(faces, direction)
+                self.rotate_faces(faces, direction, scale, uniform(-0.05, 0.05), uniform(-0.025, 0.075), uniform(-0.05, 0.05))
+                
+                for face in faces:
+                    self.add_leaves(face, uniform(0.005, 0.01), uniform(0.04, 0.08))
 
     def smooth_tree(self):        
         for face in self.bmesh_tree.faces:
             face.smooth = True
 
-    def add_color(self):
-        color_layer = self.bmesh_leaves.loops.layers.color.new("color");
-        # make a random color dict for each vert
-        # vert_color = random_color_table[vert]
-
-        def random_color(alpha=1):
-            return [uniform(0, 1) for c in "rgb"] + [alpha]
-        random_color_table = {v : random_color()
-                              for v in self.bmesh_leaves.verts}
-        for face in self.bmesh_leaves.faces:
+    def interpolate_colors(self, a, b, r):
+        return a * r + b * (1 - r)
+        
+    def colorize(self, bmesh_part, first_color, second_color):
+        color_layer = bmesh_part.loops.layers.color.new("color");
+        color_table = {v : self.interpolate_colors(first_color, second_color, uniform(0, 1)) for v in bmesh_part.verts}
+        for face in bmesh_part.faces:
             for loop in face.loops:
-                loop[color_layer] = random_color_table[loop.vert]
+                loop[color_layer] = color_table[loop.vert]
+
+    def colorize_trunk(self):
+        brown_dark = Vector((0.2431, 0.1960, 0.1569, 1))
+        brown_light = Vector((0.3177, 0.2549, 0.2039, 1))
+        self.colorize(self.bmesh_tree, brown_dark, brown_light)
+
+    def colorize_leaves(self):
+        green_dark =  Vector((0.0627, 0.2862, 0.0627, 1))
+        green_light =  Vector((0.3294, 0.5490, 0.1843, 1))
+        self.colorize(self.bmesh_leaves, green_dark, green_light)
 
     def free_meshes(self):
         self.bmesh_tree.to_mesh(self.mesh_tree)
@@ -395,10 +391,10 @@ class GeneratePineTree(bpy.types.Operator):
 
         #bpy.ops.object.editmode_toggle()
 
-    def generate_tree(self):
+    def generate_tree(self, context):
         #self.clear()
 
-        self.create_meshes()
+        self.create_meshes(context)
         self.calculate_values()
         self.generate_trunk()
         
@@ -409,17 +405,28 @@ class GeneratePineTree(bpy.types.Operator):
             self.do_generate_branches = False
 
         self.smooth_tree()
-        self.add_color()
+        self.colorize_trunk()
+        self.colorize_leaves()
+
         self.free_meshes()
 
     def execute(self, context):
-        self.generate_tree()
+        self.generate_tree(context)
         return {'FINISHED'}
+
+def add_object_button(self, context):
+    self.layout.operator(
+        GeneratePineTree.bl_idname,
+        text="Pine Tree",
+        icon='PLUGIN'
+    )
 
 def register():
     print("Registering Generate Pine Tree")
     bpy.utils.register_class(GeneratePineTree)
+    bpy.types.VIEW3D_MT_mesh_add.append(add_object_button)
 
 def unregister():
     print("Unregistering Generate Pine Tree")
     bpy.utils.unregister_class(GeneratePineTree)
+    bpy.types.VIEW3D_MT_mesh_add.remove(add_object_button)
