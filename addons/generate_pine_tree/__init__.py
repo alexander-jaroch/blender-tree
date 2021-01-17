@@ -62,6 +62,7 @@ class GeneratePineTree(bpy.types.Operator):
         description = "Number of segments in ring",
         default = 16,
         min = 3,
+        max = 32,
         soft_max = 16
     )
 
@@ -96,78 +97,39 @@ class GeneratePineTree(bpy.types.Operator):
         description = "Number of twigs with leaves",
         default = 0,
         min = 0,
-        max = 400
+        max = 600
     )
 
-    generate_branches = bpy.props.BoolProperty(
+    do_generate_branches = bpy.props.BoolProperty(
         name = "Generate Branches",
         description = "Start generating branches",
         default = False
     )
 
-    def get_index(self, n, i):
-        operations_border = [0, -self.segments + 1, self.segments, 1]
-        operations_normal = [0, 1, self.segments, self.segments + 1]
+    def add_plane(self, branch_face, factor, scale):
+        width, height = scale
+        center = branch_face.calc_center_median()
+        translate = Matrix.Translation(-center)
+        x_loc, y_loc, z_loc = self.local_axes(branch_face.normal)
 
-        if n % self.segments == self.segments - 1:
-            return n + operations_border[i]
-        else:
-            return n + operations_normal[i]
-    
-    def avg_normal(self, normals):
-        avg = Vector((0, 0, 0))
-        for normal in normals:
-            avg = avg + normal
-        return avg / len(normals)
+        c1 = center
+        c2 = center + y_loc * width
+        c3 = center + x_loc * height + y_loc * width
+        c4 = center + x_loc * height
+        corners = [c1, c2, c3, c4]
 
-    def get_normals(self, faces):
-        normals = []
-        for face in faces:
-            normals.append(face.normal)
-        return normals
-
-    # calculates center of given BMFaces and returns its center and a set of used verts 
-    def calc_center_of_faces(self, faces):    
-        center = Vector((0,0,0))
-        verts = set()
-        vert_count = 0
-        for face in faces:
-            for vert in face.verts:           
-                center = center + vert.co
-                vert_count = vert_count + 1
-                verts.add(vert)
-        center = center / vert_count
-        return (center, verts)
-
-    def local_axes(self, x_local):    
-        z_rot = Matrix([(0, -1, 0), (1, 0, 0), (0, 0, 1)])    
-        y_proj = Vector((x_local.x, x_local.y, 0))
-        y_local = y_proj @ z_rot    
-        z_local = x_local.cross(y_local)    
-        return (x_local.normalized(), y_local.normalized(), z_local.normalized())
-
-    def add_plane(self, branch_face, factor):
-        w = 0.01
-        h = 0.08
-        bf_normal = branch_face.normal
-        loc_x, loc_y, loc_z = self.local_axes(bf_normal)
-        corners = [0 * loc_x , loc_x*h , loc_x*h + loc_y*w, loc_y*w]
         vertices = []
-        for i in range(4):
-            vertices.append(self.bmesh_leaves.verts.new(corners[i]))
-        self.bmesh_leaves.faces.new(vertices)
-        face_center = branch_face.calc_center_median()   
-                    
-        translate = Matrix.Translation(vertices[0].co)            
+        for corner in corners:
+            vertices.append(self.bmesh_leaves.verts.new(corner))
+        self.bmesh_leaves.faces.new(vertices)                    
                                     
-        rot_x = Matrix.Rotation(uniform(-math.pi, math.pi), 4, loc_x)
-        rot_z = Matrix.Rotation(factor * uniform(math.pi/5, math.pi/4), 4, loc_z)
-        rot_y = Matrix.Rotation(factor * uniform(math.pi/7, math.pi/6), 4, loc_y)
+        rot_x = Matrix.Rotation(uniform(-math.pi, math.pi), 4, x_loc)
+        rot_y = Matrix.Rotation(factor * uniform(math.pi/7, math.pi/6), 4, y_loc)
+        rot_z = Matrix.Rotation(factor * uniform(math.pi/5, math.pi/4), 4, z_loc)
         
         transform = rot_z @ rot_y @ rot_x
-        #transform = scale                   
+        
         bmesh.ops.transform(self.bmesh_leaves, matrix=transform, verts=vertices, space=translate)
-        bmesh.ops.translate(self.bmesh_leaves, vec=face_center, verts=vertices)
 
     # mesh attributes
     mesh_tree = None
@@ -178,6 +140,11 @@ class GeneratePineTree(bpy.types.Operator):
     delta = 0
     height_delta = 0
     height_segments = 0
+
+    branch_faces = []
+    branch_start = 0
+    branch_end = 0
+    branch_extrudable = []
 
     def clear(self):
         for child in bpy.data.objects:
@@ -204,15 +171,6 @@ class GeneratePineTree(bpy.types.Operator):
         self.bmesh_tree = bmesh.new()
         self.bmesh_leaves = bmesh.new()
 
-    def free_meshes(self):
-        self.bmesh_tree.to_mesh(self.mesh_tree)
-        self.bmesh_tree.free()
-
-        self.bmesh_leaves.to_mesh(self.mesh_leaves)
-        self.bmesh_leaves.free()
-
-        #bpy.ops.object.editmode_toggle()
-
     def calculate_values(self):
         self.delta =  (2 * math.pi) / self.segments
         radius = (self.radius_top + self.radius_bottom) / 2
@@ -235,10 +193,10 @@ class GeneratePineTree(bpy.types.Operator):
     def generate_trunk(self):
         new_radius = self.radius_bottom
         last_ring = []
-        branch_faces = []
+        self.branch_faces = []
 
         for n in range(self.height_segments + 1):
-            radius = (1 - n / self.height_segments) * new_radius + (n / self.height_segments) * self.radius_top         # CHECK
+            radius = (1 - n / self.height_segments) * new_radius + (n / self.height_segments) * self.radius_top     # CHECK hour glass shapes possible; should we change that?
             ring = []
             for i in range(self.segments):
                 x = radius * math.cos(i * self.delta)
@@ -251,141 +209,211 @@ class GeneratePineTree(bpy.types.Operator):
             else:
                 for i in range(self.segments):
                     face = [last_ring[i], last_ring[(i + 1) % self.segments], ring[(i + 1) % self.segments], ring[i]]
+                    branch_face = self.bmesh_tree.faces.new(face)
                     if self.branch_height(n):
-                        branch_faces.append(face)
-                    self.bmesh_tree.faces.new(face)
+                        self.branch_faces.append(branch_face)
                 if n == self.height_segments:
                     self.bmesh_tree.faces.new(ring)
 
             new_radius = self.reduce(new_radius, self.radius_reduction / 100)
             last_ring = ring
 
-        return branch_faces
+    def random_scale(self, min_max_fac):
+        min_fac, max_fac = min_max_fac
+        return Matrix.Scale(uniform(min_fac, max_fac), 4)  
+
+    def random_rotation(self, min_max_rad, rot_vec):
+        min_rad, max_rad = min_max_rad
+        return Matrix.Rotation(uniform(min_rad, max_rad), 4, rot_vec)
+
+    def adjacent_indices(self, n):
+        indices = []
+        operations_border = [0, -self.segments + 1, self.segments, 1]
+        operations_normal = [0, 1, self.segments, self.segments + 1]
+
+        for i in range(4):
+            if n % self.segments == self.segments - 1:
+                indices.append(n + operations_border[i])
+            else:
+                indices.append(n + operations_normal[i])
+        return indices
+
+    def check_branch_extrudable(self, indices):
+        for index in indices:
+            if self.branch_extrudable[index]:
+                return False
+        return True
+
+    def get_branch_faces(self, indices):
+        faces = []
+        for index in indices:
+            faces.append(self.branch_faces[index])
+            self.branch_extrudable[index] = True
+        return faces
+    
+    def calc_average_face_normal(self, faces):
+        average = Vector((0, 0, 0))
+        for face in faces:
+            average = average + face.normal
+        return average / len(faces)
+
+    def extrude_faces(self, faces, direction):
+        extrude = bmesh.ops.extrude_face_region(self.bmesh_tree, geom=faces)            
+        vertices = [vert for vert in extrude['geom'] if isinstance(vert, bmesh.types.BMVert)]
+                                            
+        bmesh.ops.translate(self.bmesh_tree, vec=direction, verts=vertices)                    
+        bmesh.ops.delete(self.bmesh_tree, geom=faces, context="FACES")
+                    
+        return [face for face in extrude['geom'] if isinstance(face, bmesh.types.BMFace)]
+
+    def calc_center_of_faces(self, faces):    
+        center = Vector((0,0,0))
+        verts = set()
+        vert_count = 0
+        for face in faces:
+            for vert in face.verts:           
+                center = center + vert.co
+                vert_count = vert_count + 1
+                verts.add(vert)
+        center = center / vert_count
+        return (center, list(verts))
+
+    def local_axes(self, x_local):    
+        z_rot = Matrix([(0, -1, 0), (1, 0, 0), (0, 0, 1)])    
+        y_proj = Vector((x_local.x, x_local.y, 0))
+        y_local = y_proj @ z_rot    
+        z_local = x_local.cross(y_local)    
+        return (x_local.normalized(), y_local.normalized(), z_local.normalized())
+
+    def rotate_faces(self, faces, direction, scale_factor, rad_x, rad_y, rad_z):
+        center, vertices = self.calc_center_of_faces(faces)            
+        translate = Matrix.Translation(-center)         
+        x_loc, y_loc, z_loc = self.local_axes(direction)
+
+        scale = Matrix.Scale(scale_factor, 4)
+        rot_x = Matrix.Rotation(rad_x, 4, x_loc)
+        rot_y = Matrix.Rotation(rad_y, 4, y_loc)
+        rot_z = Matrix.Rotation(rad_z, 4, z_loc)
+                        
+        transform = rot_z @ rot_y @ rot_x @ scale                         
+        bmesh.ops.transform(self.bmesh_tree, matrix=transform, verts=vertices, space=translate)
+
+    def generate_branches(self):
+        self.bmesh_tree.faces.ensure_lookup_table()
+        self.branch_start = len(self.bmesh_tree.faces)
+        self.branch_extrudable = [False] * len(self.branch_faces)
+
+        for i in range(self.branch_count):                    
+            random_index = randint(0, len(self.branch_faces) - self.segments - 1)
+            adjacent_indices = self.adjacent_indices(random_index)
+                                
+            if self.check_branch_extrudable(adjacent_indices):                          
+                faces = self.get_branch_faces(adjacent_indices)
+                    
+                branch_segments = 8      # CHECK branch_segments and length as user input?
+
+                for k in range(branch_segments):
+                    total_segments = self.segments * self.height_segments                           # CHECK see above
+                    segment_length = (1 - random_index / total_segments) * 2 / branch_segments      # CHECK see above
+
+                    direction = self.calc_average_face_normal(faces) * segment_length
+                    
+                    faces = self.extrude_faces(faces, direction)                    
+                    self.rotate_faces(faces, direction, uniform(0.65, 0.8), uniform(-0.2, 0.2), uniform(-0.1, 0.3), uniform(-0.2, 0.2))
+                    
+        self.bmesh_tree.faces.ensure_lookup_table()
+        self.branch_end = len(self.bmesh_tree.faces)
+
+    def generate_twigs(self):            
+        for i in range(self.twig_count):
+            self.bmesh_tree.faces.ensure_lookup_table()
+            extrude_faces = [self.bmesh_tree.faces[randint(self.branch_start, self.branch_end - 1)]]
+            
+            branch_extrude = 16
+            for x in range(branch_extrude):
+                extruded = bmesh.ops.extrude_face_region(self.bmesh_tree, geom=extrude_faces)            
+                translate_verts = [v for v in extruded['geom'] if isinstance(v, bmesh.types.BMVert)]
+
+                length = 0.001
+                
+                if x > 0:
+                    length = 0.0125
+                
+                direction = self.calc_average_face_normal(extrude_faces) * -1 * length
+                
+                bmesh.ops.translate(self.bmesh_tree, vec=direction, verts=translate_verts)
+                
+                bmesh.ops.delete(self.bmesh_tree, geom=extrude_faces, context="FACES")
+                
+                extrude_faces = [f for f in extruded['geom'] if isinstance(f, bmesh.types.BMFace)]
+                
+                center, face_verts = self.calc_center_of_faces(extrude_faces)            
+                translate = Matrix.Translation(-center)            
+                x_loc, y_loc, z_loc = self.local_axes(direction)
+                
+                for face in extrude_faces:    
+                    scale = self.random_scale((0.1, 0.05))
+                    if x > 0: 
+                        scale = self.random_scale((0.9, 0.95))
+                        
+                    rot_x = self.random_rotation((-0.05, 0.05), x_loc)
+                    rot_y = self.random_rotation((-0.025, 0.075), y_loc)
+                    rot_z = self.random_rotation((-0.05, 0.05), z_loc)
+                    
+                    transform = rot_z @ rot_y @ rot_x @ scale       
+                    bmesh.ops.transform(self.bmesh_tree, matrix=transform, verts=face_verts, space=translate)
+            
+                    #leaf_scale = (0.01, 0.08)
+                    leaf_scale = (uniform(0.005, 0.01), uniform(0.04, 0.08))
+
+                    self.add_plane(face, 1, leaf_scale)
+                    self.add_plane(face, -1, leaf_scale)
 
     def smooth_tree(self):        
         for face in self.bmesh_tree.faces:
             face.smooth = True
 
-    def generate(self):    
+    def add_color(self):
+        color_layer = self.bmesh_leaves.loops.layers.color.new("color");
+        # make a random color dict for each vert
+        # vert_color = random_color_table[vert]
+
+        def random_color(alpha=1):
+            return [uniform(0, 1) for c in "rgb"] + [alpha]
+        random_color_table = {v : random_color()
+                              for v in self.bmesh_leaves.verts}
+        for face in self.bmesh_leaves.faces:
+            for loop in face.loops:
+                loop[color_layer] = random_color_table[loop.vert]
+
+    def free_meshes(self):
+        self.bmesh_tree.to_mesh(self.mesh_tree)
+        self.bmesh_tree.free()
+
+        self.bmesh_leaves.to_mesh(self.mesh_leaves)
+        self.bmesh_leaves.free()
+
+        #bpy.ops.object.editmode_toggle()
+
+    def generate_tree(self):
         #self.clear()
+
         self.create_meshes()
         self.calculate_values()
-
-        # create trunk
-        side_faces = self.generate_trunk()
+        self.generate_trunk()
         
-        if self.generate_branches:
-            # create branches
-            used_faces = [False] * len(side_faces)
-            self.bmesh_tree.faces.ensure_lookup_table()
-            branch_start = len(self.bmesh_tree.faces)
+        if self.do_generate_branches:
+            self.generate_branches()
+            self.generate_twigs()
 
-            for i in range(self.branch_count):
-                r = randint(0, len(side_faces) - self.segments - 1)
-                used = False
-                    
-                extrude_faces = []
-                
-                for k in range(4):
-                    index = self.get_index(r, k)
-                
-                    if used_faces[index]:
-                        used = True
-                        break
-                
-                if not used:
-                    for k in range(4):
-                        index = self.get_index(r, k)
-                    
-                        face = side_faces[index]
-                        used_faces[index] = True
-                        
-                        bmface = self.bmesh_tree.faces.get(face)            
-                        extrude_faces.append(bmface)
-                    
-                    branch_extrude = 8
-                    for x in range(branch_extrude):
-                                
-                        extruded = bmesh.ops.extrude_face_region(self.bmesh_tree, geom=extrude_faces)            
-                        translate_verts = [v for v in extruded['geom'] if isinstance(v, bmesh.types.BMVert)]
-                        
-                        total_segments = self.segments * self.height_segments
-                        length = (1 - r / total_segments) * 2 / branch_extrude
-                    
-                        direction = self.avg_normal(self.get_normals(extrude_faces)) * -1 * length
-                    
-                        bmesh.ops.translate(self.bmesh_tree, vec=direction, verts=translate_verts)
-                    
-                        bmesh.ops.delete(self.bmesh_tree, geom=extrude_faces, context="FACES")
-                    
-                        extrude_faces = [f for f in extruded['geom'] if isinstance(f, bmesh.types.BMFace)]
-                    
-                        center, face_verts = self.calc_center_of_faces(extrude_faces)            
-                        translate = Matrix.Translation(-center)            
-                        x_loc, y_loc, z_loc = self.local_axes(direction)
-                    
-                        for face in extrude_faces:                                      
-                            scale = Matrix.Scale(uniform(0.9, 0.95), 4)                
-                            rot_x = Matrix.Rotation(uniform(-0.05, 0.05), 4, x_loc)
-                            rot_y = Matrix.Rotation(uniform(-0.025, 0.075), 4, y_loc)
-                            rot_z = Matrix.Rotation(uniform(-0.05, 0.05), 4, z_loc)
-                        
-                            transform = rot_z @ rot_y @ rot_x @ scale                         
-                            bmesh.ops.transform(self.bmesh_tree, matrix=transform, verts=list(face_verts), space=translate)
-
-            max_len = len(self.bmesh_tree.faces)            
-            for i in range(self.twig_count):
-                # add twigs
-                self.bmesh_tree.faces.ensure_lookup_table()
-                extrude_faces = [self.bmesh_tree.faces[randint(branch_start, max_len - 1)]]
-                    
-                # scale first face ?
-            
-                branch_extrude = 16
-                for x in range(branch_extrude):
-                    extruded = bmesh.ops.extrude_face_region(self.bmesh_tree, geom=extrude_faces)            
-                    translate_verts = [v for v in extruded['geom'] if isinstance(v, bmesh.types.BMVert)]
-
-                    length = 0.001
-                
-                    if x > 0:
-                        length = 0.0125
-                
-                    direction = self.avg_normal(self.get_normals(extrude_faces)) * -1 * length
-                
-                    bmesh.ops.translate(self.bmesh_tree, vec=direction, verts=translate_verts)
-                
-                    bmesh.ops.delete(self.bmesh_tree, geom=extrude_faces, context="FACES")
-                
-                    extrude_faces = [f for f in extruded['geom'] if isinstance(f, bmesh.types.BMFace)]
-                
-                    center, face_verts = self.calc_center_of_faces(extrude_faces)            
-                    translate = Matrix.Translation(-center)            
-                    x_loc, y_loc, z_loc = self.local_axes(direction)
-                
-                    for face in extrude_faces:    
-                        scale = Matrix.Scale(uniform(0.1, 0.05), 4)
-                        if x > 0: 
-                            scale = Matrix.Scale(uniform(0.9, 0.95), 4)    
-                                        
-                        rot_x = Matrix.Rotation(uniform(-0.05, 0.05), 4, x_loc)
-                        rot_y = Matrix.Rotation(uniform(-0.025, 0.075), 4, y_loc)
-                        rot_z = Matrix.Rotation(uniform(-0.05, 0.05), 4, z_loc)
-                    
-                        transform = rot_z @ rot_y @ rot_x @ scale 
-                        #transform = scale                   
-                        bmesh.ops.transform(self.bmesh_tree, matrix=transform, verts=list(face_verts), space=translate)
-            
-                        self.add_plane(face, 1)
-                        self.add_plane(face, -1)
-
-            self.generate_branches = False
+            self.do_generate_branches = False
 
         self.smooth_tree()
+        self.add_color()
         self.free_meshes()
 
     def execute(self, context):
-        self.generate()
+        self.generate_tree()
         return {'FINISHED'}
 
 def register():
