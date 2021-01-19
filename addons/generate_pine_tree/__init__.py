@@ -184,7 +184,8 @@ class GeneratePineTree(bpy.types.Operator, bpy_extras.object_utils.AddObjectHelp
         new_radius = self.radius_bottom
         last_ring = []
         self.branch_faces = []
-
+        
+        # creater new ring
         for n in range(self.height_segments + 1):
             radius = (1 - n / self.height_segments) * new_radius + (n / self.height_segments) * self.radius_top
             ring = []
@@ -197,6 +198,7 @@ class GeneratePineTree(bpy.types.Operator, bpy_extras.object_utils.AddObjectHelp
             if n == 0:
                 self.bmesh_tree.faces.new(ring)
             else:
+                # create new faces from old and new ring
                 for i in range(self.segments):
                     face = [last_ring[i], last_ring[(i + 1) % self.segments], ring[(i + 1) % self.segments], ring[i]]
                     branch_face = self.bmesh_tree.faces.new(face)
@@ -205,6 +207,7 @@ class GeneratePineTree(bpy.types.Operator, bpy_extras.object_utils.AddObjectHelp
                 if n == self.height_segments:
                     self.bmesh_tree.faces.new(ring)
 
+             # curve reduce
             new_radius = self.reduce(new_radius, self.radius_reduction / 100)
             last_ring = ring
 
